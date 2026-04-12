@@ -36,3 +36,15 @@ To use the AI quiz feature, add your Gemini API key in one of these ways:
 - Detailed answer review with explanations
 - Exportable performance report
 - PDF quiz paper generation using `ReportLab`
+
+## 📸 Screenshots
+
+### 📝 Quiz Generator UI
+![Quiz UI](screenshots/paper_generator.jpeg)
+
+### 🤖 AI Smart Quiz
+![AI Quiz](screenshots/quiz_preference.jpeg)
+
+### 📊 Performance Report
+![Report](screenshots/generated_quiz.jpeg)
+![Report](screenshots/quiz_output.jpeg)
