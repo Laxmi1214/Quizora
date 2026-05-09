@@ -1,11 +1,11 @@
-# QuizNova
+# Quizora
 
-QuizNova is a desktop quiz application built with Python and CustomTkinter.
+Quizora is a desktop quiz application built with Python and CustomTkinter.
 
 It now supports two main workflows:
 
 - `Paper Generator`: Create randomized PDF question papers and a master answer key.
-- `OMR Correction`: Generate printable OMR sheets, upload scanned answer sheets, and evaluate candidates automatically.
+- `AI OCR OMR Correction`: Generate printable OMR sheets, upload scanned PDF/image answer sheets, and evaluate candidates automatically.
 - `AI Smart Quiz`: Generate a Gemini-powered quiz, answer it inside the app, get your score, see topic-wise performance, and identify weak topics to improve.
 
 ## Install
@@ -38,17 +38,18 @@ To use the AI quiz feature, add your Gemini API key in one of these ways:
 - Exportable performance report
 - PDF quiz paper generation using `ReportLab`
 - Printable OMR sheets with answer bubbles and sketch/rough-work space
-- OMR answer-sheet correction from scanned image uploads using Pillow-based OCR-style image processing
+- AI OCR answer-sheet correction from scanned PDF/image uploads using Gemini document understanding
+- Pillow-based local image-processing fallback for JPG/PNG sheets
 
 ## OMR Workflow
 
 1. Generate question papers from the `Paper Generator` tab.
 2. The app creates `Paper_*.pdf`, `OMR_Sheet_Paper_*.pdf`, `Master_Answer_Key.pdf`, and `OMR_Answer_Key.json`.
 3. Print the matching OMR sheet for each candidate.
-4. After the test, scan or photograph the completed sheet as a JPG/PNG image. Do not upload the blank PDF sheet directly.
+4. After the test, scan or photograph the completed sheet as a PDF, JPG, or PNG file.
 5. Click `Upload OMR Sheet for Correction`, select `OMR_Answer_Key.json`, choose the scanned sheet, and enter the paper number.
 
-Image uploads work with the listed requirements. PDF scan upload needs PyMuPDF, which may not be available on Python 3.14, so JPG/PNG is the recommended format.
+AI OCR correction needs a Gemini API key because the uploaded sheet is sent to Gemini for document reading. If AI OCR fails for an image file, the app can still use the local Pillow-based bubble detection fallback.
 
 ## 📸 Screenshots
 

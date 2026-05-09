@@ -1,4 +1,6 @@
+import base64
 import json
+import mimetypes
 import os
 import random
 import threading
@@ -186,7 +188,7 @@ class QuizNovaApp:
 
         ctk.CTkLabel(
             omr_frame,
-            text="Upload a scanned OMR answer sheet image after the test to evaluate the candidate. Use JPG or PNG.",
+            text="Upload a scanned OMR answer sheet PDF or image. AI OCR reads the marked answers and evaluates the candidate.",
             font=ctk.CTkFont(size=13),
             wraplength=780,
             justify="left",
@@ -569,13 +571,6 @@ class QuizNovaApp:
         omr_canvas.save()
 
     def correct_omr_sheet(self) -> None:
-        if Image is None or ImageOps is None:
-            messagebox.showerror(
-                "Missing OCR Libraries",
-                "Install OCR dependency first:\n\npip install pillow",
-            )
-            return
-
         key_path = self.latest_answer_key_path
         if not key_path or not os.path.exists(key_path):
             key_path = filedialog.askopenfilename(
@@ -588,19 +583,12 @@ class QuizNovaApp:
         sheet_path = filedialog.askopenfilename(
             title="Select scanned OMR sheet",
             filetypes=[
-                ("Image Files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
+                ("OMR Sheets", "*.pdf *.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
+                ("PDF Files", "*.pdf"),
                 ("Image Files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
             ],
         )
         if not sheet_path:
-            return
-
-        if sheet_path.lower().endswith(".pdf"):
-            messagebox.showerror(
-                "Use Image Upload",
-                "Please upload the filled OMR sheet as a JPG or PNG image.\n\n"
-                "Tip: scan the sheet, or take a clear straight photo with your phone.",
-            )
             return
 
         paper_num = simpledialog.askinteger("Paper Number", "Enter the paper number to evaluate:", minvalue=1)
@@ -616,11 +604,150 @@ class QuizNovaApp:
                 messagebox.showerror("Error", f"No answer key found for Paper {paper_num}.")
                 return
 
-            page_images = self.load_omr_images(sheet_path)
-            detected_answers = self.read_omr_answers(page_images, len(answer_key))
+            api_key = self.gemini_api_key or os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                messagebox.showerror(
+                    "Missing API Key",
+                    "AI OCR correction needs your Gemini API key. Add it in .env as GEMINI_API_KEY or use the AI Smart Quiz tab.",
+                )
+                return
+
+            try:
+                detected_answers = self.request_gemini_omr_answers(
+                    api_key=api_key,
+                    sheet_path=sheet_path,
+                    paper_num=paper_num,
+                    question_count=len(answer_key),
+                )
+            except Exception as ai_exc:
+                if sheet_path.lower().endswith(".pdf"):
+                    raise RuntimeError(f"AI OCR could not read the PDF OMR sheet: {ai_exc}") from ai_exc
+
+                if Image is None or ImageOps is None:
+                    raise RuntimeError(
+                        f"AI OCR failed and local image fallback needs Pillow: {ai_exc}"
+                    ) from ai_exc
+
+                page_images = self.load_omr_images(sheet_path)
+                detected_answers = self.read_omr_answers(page_images, len(answer_key))
+
             self.show_omr_result(key_data.get("exam_name", ""), paper_num, answer_key, detected_answers)
         except Exception as exc:
             messagebox.showerror("OMR Correction Error", f"Could not correct the sheet.\n\n{exc}")
+
+    def request_gemini_omr_answers(
+        self,
+        api_key: str,
+        sheet_path: str,
+        paper_num: int,
+        question_count: int,
+        model: str = "gemini-2.5-flash",
+    ) -> dict:
+        mime_type = self.get_omr_mime_type(sheet_path)
+        with open(sheet_path, "rb") as sheet_file:
+            encoded_file = base64.b64encode(sheet_file.read()).decode("utf-8")
+
+        prompt = self.build_omr_ocr_prompt(paper_num, question_count)
+        endpoint = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{urllib.parse.quote(model)}:generateContent?key={urllib.parse.quote(api_key)}"
+        )
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": encoded_file,
+                            }
+                        },
+                    ]
+                }
+            ]
+        }
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                raw_body = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            raise ValueError(f"Gemini AI OCR failed with HTTP {exc.code}: {error_body}") from exc
+        except urllib.error.URLError as exc:
+            raise ValueError(f"Could not reach Gemini AI OCR: {exc.reason}") from exc
+
+        data = json.loads(raw_body)
+        candidates = data.get("candidates", [])
+        if not candidates:
+            raise ValueError("Gemini AI OCR returned no candidates.")
+
+        parts = candidates[0].get("content", {}).get("parts", [])
+        response_text = "\n".join(part.get("text", "") for part in parts if part.get("text"))
+        if not response_text.strip():
+            raise ValueError("Gemini AI OCR returned an empty response.")
+
+        payload = self.extract_json_payload(response_text)
+        answers = payload.get("answers", payload)
+        return self.normalize_detected_answers(answers, question_count)
+
+    def get_omr_mime_type(self, sheet_path: str) -> str:
+        extension = os.path.splitext(sheet_path)[1].lower()
+        extension_map = {
+            ".pdf": "application/pdf",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".bmp": "image/bmp",
+            ".tif": "image/tiff",
+            ".tiff": "image/tiff",
+        }
+        return extension_map.get(extension) or mimetypes.guess_type(sheet_path)[0] or "application/octet-stream"
+
+    def build_omr_ocr_prompt(self, paper_num: int, question_count: int) -> str:
+        return f"""
+You are correcting a filled OMR answer sheet for Quizora.
+
+Task:
+- Read the uploaded PDF/image document.
+- Detect the marked answer bubble for each question.
+- Valid options are A, B, C, and D.
+- If no option is clearly marked, use "Blank/Unclear".
+- If multiple options are marked for the same question, use "Blank/Unclear".
+- Return strict JSON only. Do not include markdown fences or explanation.
+
+Context:
+- Paper number: {paper_num}
+- Total questions: {question_count}
+- The OMR sheet has question numbers and four bubbles labelled A, B, C, D.
+
+Required JSON shape:
+{{
+  "answers": {{
+    "1": "A",
+    "2": "Blank/Unclear"
+  }}
+}}
+
+Return answers for every question from 1 to {question_count}.
+""".strip()
+
+    def normalize_detected_answers(self, answers: dict, question_count: int) -> dict:
+        normalized = {}
+        for question_number in range(1, question_count + 1):
+            raw_answer = answers.get(str(question_number), answers.get(question_number, "Blank/Unclear"))
+            answer = str(raw_answer).strip().upper()
+            if answer in ANSWER_LETTERS:
+                normalized[str(question_number)] = answer
+            else:
+                normalized[str(question_number)] = "Blank/Unclear"
+        return normalized
 
     def load_omr_images(self, sheet_path: str) -> list:
         if sheet_path.lower().endswith(".pdf"):
